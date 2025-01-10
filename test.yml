@@ -1,0 +1,8 @@
+---
+- name: Role test
+  hosts: "{{ affected_host }}"
+  become: true
+  roles:
+    - role: ansible_role_linux_initial_setup
+      vars:
+        linux_initial_setup_pattern_file: __check_rhel810.yml

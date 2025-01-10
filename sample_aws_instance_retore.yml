@@ -1,0 +1,110 @@
+---
+- name: ターゲットノードを初期化する
+  hosts: "{{ target_node | default('dummy') }}"
+  gather_facts: false
+  vars:
+    # 対象のインスタンスが所属するリージョンとサブネット
+    my_region: "ap-northeast-1"
+    my_subnet_id: "subnet-045e6749c98eddbbf"
+  tasks:
+    - name: ツールインストール(aws cli)
+      pip:
+        name: awscli
+        state: present
+        executable: pip3
+
+    - name: ボリュームのデタッチ（swap）
+      amazon.aws.ec2_vol:
+        id: "vol-010a1e13f9b4b5c93"
+        instance: None
+        region: "{{ my_region }}"
+      ignore_erros: true  
+      delegate_to: localhost
+      loop:
+        - "vol-010a1e13f9b4b5c93"
+        - "vol-0ad7c795f71eb24bd"
+      when: target_node == "ato-target-rhel94"
+
+    - name: EC2メタデータ取得
+      ansible.builtin.shell: >
+        aws ec2 describe-instances --region "{{ my_region }}" --filters Name=network-interface.addresses.private-ip-address,\
+        Values="{{ ansible_host }}" --query 'Reservations[].Instances[].InstanceId' --output text
+      register: my_instance_id
+      changed_when: false
+      delegate_to: localhost
+
+    - name: EC2ボリューム情報取得
+      amazon.aws.ec2_vol_info:
+        filters:
+          attachment.instance-id: "{{ my_instance_id.stdout }}"
+        region: "{{ my_region }}"
+      register: my_vol
+      delegate_to: localhost
+
+    - name: 対象スナップショット情報取得
+      amazon.aws.ec2_snapshot_info:
+        filters:
+          tag:Name: "{{ ansible_host }}"
+        region: "{{ my_region }}"
+      register: my_snapshot
+      delegate_to: localhost
+
+    - name: インスタンスの停止
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ my_instance_id.stdout }}"
+        region: "{{ my_region }}"
+        state: "stopped"
+        wait: true
+        vpc_subnet_id: "{{ my_subnet_id }}"
+      delegate_to: localhost
+
+    - name: ボリュームのデタッチ
+      amazon.aws.ec2_vol:
+        id: "{{ my_vol.volumes[0].id }}"
+        instance: None
+        region: "{{ my_region }}"
+      delegate_to: localhost
+
+    - name: 初期スナップショットからのボリュームの作成およびアタッチ
+      amazon.aws.ec2_vol:
+        instance: "{{ my_instance_id.stdout }}"
+        snapshot: "{{ my_snapshot.snapshots[0].snapshot_id }}"
+        device_name: "/dev/sda1"
+        volume_type: gp2
+        region: "{{ my_region }}"
+        delete_on_termination: true
+      delegate_to: localhost
+
+    - name: インスタンスの起動
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ my_instance_id.stdout }}"
+        region: "{{ my_region }}"
+        state: "running"
+        wait: true
+        vpc_subnet_id: "{{ my_subnet_id }}"
+      delegate_to: localhost
+
+    - name: SSHが有効になるまで待機
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+      delegate_to: localhost
+
+    - name: 接続確認
+      become: true
+      ansible.builtin.ping:
+      register: res_ping
+      retries: 5
+      delay: 10
+      until: res_ping.ping is defined and res_ping.ping == 'pong'
+
+    - name: 古いボリュームの削除
+      amazon.aws.ec2_vol:
+        id: "{{ my_vol.volumes[0].id }}"
+        state: absent
+        region: "{{ my_region }}"
+      delegate_to: localhost
+
+    - name: 実行結果
+      ansible.builtin.debug:
+        msg: "「{{ target_node }}」の初期化が完了しました"

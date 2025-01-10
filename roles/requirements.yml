@@ -1,0 +1,6 @@
+---
+roles:
+  - name: ansible_role_linux_initial_setup
+    src: https://github.com/nhk-nws/ansible_role_linux_initial_setup.git
+    scm: git
+    version: iijima/create_init
